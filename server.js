@@ -22,6 +22,11 @@ function generateCode() {
 wss.on('connection', (socket) => {
     socket.roomCode = null;
     socket.isHost = false;
+    socket.isAlive = true;
+
+    socket.on('pong', () => {
+        socket.isAlive = true;
+    });
 
     socket.on('message', (data) => {
         let msg;
@@ -74,18 +79,68 @@ wss.on('connection', (socket) => {
     });
 
     socket.on('close', () => {
-        if (socket.roomCode && rooms[socket.roomCode]) {
-            const room = rooms[socket.roomCode];
-            const opponent = socket.isHost ? room.client : room.host;
-            if (opponent && opponent.readyState === WebSocket.OPEN) {
-                opponent.send(JSON.stringify({ type: 'opponent_disconnected' }));
-            }
-            delete rooms[socket.roomCode];
-            console.log('Room closed: ' + socket.roomCode);
-        }
+        cleanupSocket(socket);
+    });
+
+    socket.on('error', () => {
+        cleanupSocket(socket);
     });
 });
 
+function cleanupSocket(socket) {
+    if (socket.roomCode && rooms[socket.roomCode]) {
+        const room = rooms[socket.roomCode];
+        const opponent = socket.isHost ? room.client : room.host;
+        if (opponent && opponent.readyState === WebSocket.OPEN) {
+            try {
+                opponent.send(JSON.stringify({ type: 'opponent_disconnected' }));
+            } catch (e) {}
+        }
+        delete rooms[socket.roomCode];
+        console.log('Room closed: ' + socket.roomCode);
+    }
+}
+
+// Ping all clients every 30 seconds to detect dead connections
+const pingInterval = setInterval(() => {
+    wss.clients.forEach((socket) => {
+        if (socket.isAlive === false) {
+            cleanupSocket(socket);
+            return socket.terminate();
+        }
+        socket.isAlive = false;
+        socket.ping();
+    });
+}, 30000);
+
+// Clean up stale rooms every 5 minutes
+setInterval(() => {
+    for (const code in rooms) {
+        const room = rooms[code];
+        const hostDead = !room.host || room.host.readyState !== WebSocket.OPEN;
+        const clientDead = room.client && room.client.readyState !== WebSocket.OPEN;
+
+        if (hostDead) {
+            if (room.client && room.client.readyState === WebSocket.OPEN) {
+                try {
+                    room.client.send(JSON.stringify({ type: 'opponent_disconnected' }));
+                } catch (e) {}
+            }
+            delete rooms[code];
+            console.log('Cleaned stale room: ' + code);
+        } else if (clientDead && room.client) {
+            if (room.host.readyState === WebSocket.OPEN) {
+                try {
+                    room.host.send(JSON.stringify({ type: 'opponent_disconnected' }));
+                } catch (e) {}
+            }
+            room.client = null;
+        }
+    }
+    console.log('Active rooms: ' + Object.keys(rooms).length);
+}, 5 * 60 * 1000);
+
+// Self-ping to prevent Render free tier from sleeping
 const SELF_URL = process.env.RENDER_EXTERNAL_URL || null;
 if (SELF_URL) {
     setInterval(() => {
@@ -94,3 +149,7 @@ if (SELF_URL) {
         }).on('error', () => {});
     }, 14 * 60 * 1000);
 }
+
+wss.on('close', () => {
+    clearInterval(pingInterval);
+});
