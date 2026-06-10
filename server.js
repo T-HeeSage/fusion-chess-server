@@ -143,13 +143,13 @@ setInterval(() => {
 // Self-ping to prevent Render free tier from sleeping
 const SELF_URL = process.env.RENDER_EXTERNAL_URL || null;
 if (SELF_URL) {
+    const https = require('https');
     setInterval(() => {
-        http.get(SELF_URL, () => {
+        https.get(SELF_URL, () => {
             console.log('Self-ping OK');
         }).on('error', () => {});
     }, 14 * 60 * 1000);
 }
-
 wss.on('close', () => {
     clearInterval(pingInterval);
 });
